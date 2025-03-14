@@ -7,8 +7,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent } from "@/components/ui/card"
-import { Sparkles, Send, ArrowRight } from "lucide-react"
+import { Sparkles, Send, ArrowRight, Calendar, Clock, Users, MapPin, Check, Loader2 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { Badge } from "@/components/ui/badge"
+import { useAuth } from "@/components/auth-provider"
+import { db } from "@/lib/firebase"
+import { collection, addDoc, serverTimestamp } from "firebase/firestore"
+import { useToast } from "@/components/ui/use-toast"
 
 type Message = {
   id: string
@@ -16,27 +21,40 @@ type Message = {
   content: string
 }
 
+type RoomBookingState = {
+  date: string | null
+  timeSlot: string | null
+  capacity: number | null
+  selectedRoom: string | null
+  eventName: string | null
+  eventContent: string | null
+  step: number
+}
+
 export function EventCreationChatbot() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
       role: "assistant",
-      content:
-        "Hi there! I'm your AI event assistant. I'll help you create the perfect AI event. What type of event are you planning? (Workshop, Conference, Meetup, etc.)",
+      content: "Welcome to the Locali AI Event Creation System! What date would you like to book a room? (Please enter in M/D/YYYY format)",
     },
   ])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const [step, setStep] = useState(1)
-  const [eventData, setEventData] = useState({
-    title: "",
-    description: "",
-    topics: [],
-    format: "",
-    audience: [],
+  const [bookingState, setBookingState] = useState<RoomBookingState>({
+    date: null,
+    timeSlot: null,
+    capacity: null,
+    selectedRoom: "Katharyn Alvord Gerlich Theater",
+    eventName: null,
+    eventContent: null,
+    step: 1
   })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
+  const { user } = useAuth()
+  const { toast } = useToast()
+  const [savingEvent, setSavingEvent] = useState(false)
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -44,7 +62,103 @@ export function EventCreationChatbot() {
 
   useEffect(() => {
     scrollToBottom()
-  }, [scrollToBottom])
+  }, [messages, scrollToBottom])
+
+  const validateDate = (dateStr: string): boolean => {
+    // Simple date validation
+    const dateRegex = /^\d{1,2}\/\d{1,2}\/\d{4}$/
+    return dateRegex.test(dateStr)
+  }
+
+  const validateTimeSlot = (timeStr: string): boolean => {
+    // Accept various time formats
+    return timeStr.includes("-") && timeStr.length > 3
+  }
+
+  const validateCapacity = (capacityStr: string): boolean => {
+    return !isNaN(Number(capacityStr)) && Number(capacityStr) > 0
+  }
+
+  const suggestContentForEvent = (eventName: string): string => {
+    // Format matches the example in the problem statement
+    let content = `Suggested content for ${eventName}:\n\n`
+
+    if (eventName.toLowerCase().includes("deep learning") || eventName.toLowerCase().includes("ai")) {
+      content += `1. Introduction to Deep Learning (15 min)
+What is Deep Learning?
+Difference between ML, DL, and AI
+Applications (Computer Vision, NLP, Generative AI)
+
+2. Key Architectures & Models (20 min)
+CNNs (Convolutional Neural Networks) – Image processing
+RNNs, LSTMs, Transformers – Sequential data & NLP
+GANs, Diffusion Models – Generative AI & Image Synthesis
+
+3. Hands-on Demo (30-45 min)
+Image Classification with CNNs (e.g., TensorFlow/Keras)
+Text Generation with Transformers (e.g., OpenAI's GPT)
+Fine-tuning a Pre-trained Model (e.g., Hugging Face)
+
+4. Real-World Use Cases (20 min)
+Deep Learning in Industry (Finance, Healthcare, Autonomous Driving)
+Challenges: Data Bias, Interpretability, Compute Cost
+
+5. Networking & Q&A (15-30 min)
+Discuss career paths in Deep Learning
+Open discussion on industry trends & challenges`
+    } else if (eventName.toLowerCase().includes("machine learning") || eventName.toLowerCase().includes("ml")) {
+      content += `1. Introduction to Machine Learning (15 min)
+Overview of ML concepts and types
+Supervised vs. Unsupervised Learning
+Common applications
+
+2. ML Algorithms Overview (20 min)
+Classification algorithms (Decision Trees, SVM, etc.)
+Regression techniques
+Clustering and dimensionality reduction
+
+3. Practical Workshop (30 min)
+Building a simple ML model with scikit-learn
+Data preprocessing techniques
+Model evaluation and validation
+
+4. Advanced Topics & Discussion (20 min)
+Ensemble methods
+Feature engineering best practices
+Ethical considerations in ML
+
+5. Q&A and Networking (15 min)
+Career opportunities in ML
+Resources for further learning`
+    } else {
+      content += `1. Introduction and Overview (15 min)
+Welcome and introduction to the topic
+Key concepts and terminology
+Relevance to UW community
+
+2. Main Presentation (30 min)
+Core content related to "${eventName}"
+Recent developments and research
+Real-world applications
+
+3. Interactive Session (20 min)
+Hands-on activities
+Group discussions
+Q&A opportunities
+
+4. Next Steps (15 min)
+Resources for further learning
+Future events and connections
+Practical applications
+
+5. Networking (20 min)
+Meet fellow attendees
+Connect with speakers and experts
+Refreshments and informal discussions`
+    }
+
+    return content
+  }
 
   const handleSend = async () => {
     if (!input.trim()) return
@@ -59,8 +173,8 @@ export function EventCreationChatbot() {
     setInput("")
     setIsLoading(true)
 
-    // Simulate AI response based on the current step
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    // Add a small delay to simulate processing
+    await new Promise((resolve) => setTimeout(resolve, 800))
 
     const assistantResponse: Message = {
       id: (Date.now() + 1).toString(),
@@ -68,41 +182,63 @@ export function EventCreationChatbot() {
       content: "",
     }
 
-    if (step === 1) {
-      // After user specifies event type
-      setEventData((prev) => ({ ...prev, format: input }))
-      assistantResponse.content = `Great! A ${input} sounds exciting. What's the main topic or focus area of your ${input}?`
-      setStep(2)
-    } else if (step === 2) {
-      // After user specifies topic
-      setEventData((prev) => ({ ...prev, topics: [input] }))
-      assistantResponse.content = `A ${eventData.format} about ${input} sounds interesting! Based on similar events, I suggest the title: "Exploring ${input}: Innovations and Applications". What do you think of this title?`
-      setStep(3)
-    } else if (step === 3) {
-      // After user responds to title suggestion
-      setEventData((prev) => ({ ...prev, title: input }))
-      assistantResponse.content = `Great title! Now, who is your target audience for this event? (Students, Professionals, Researchers, etc.)`
-      setStep(4)
-    } else if (step === 4) {
-      // After user specifies audience
-      setEventData((prev) => ({ ...prev, audience: [input] }))
-      assistantResponse.content = `Perfect! Based on your ${eventData.format} about ${eventData.topics[0]} for ${input}, I recommend the following agenda structure:
-      
-1. Introduction to ${eventData.topics[0]} (15 min)
-2. Current Challenges and Opportunities (20 min)
-3. Interactive Demo/Workshop (30 min)
-4. Q&A and Networking (25 min)
+    // Handle different steps of the booking process
+    switch (bookingState.step) {
+      case 1: // Date entry
+        if (validateDate(input)) {
+          setBookingState(prev => ({ ...prev, date: input, step: 2 }))
+          assistantResponse.content = `Great! I've noted the date: ${input}. Now, please enter the time slot (e.g., 10:00 AM - 12:00 PM or 11:00am-12:00pm):`;
+        } else {
+          assistantResponse.content = "Please enter a valid date in M/D/YYYY format.";
+        }
+        break;
 
-Would you like to use this agenda or modify it?`
-      setStep(5)
-    } else if (step === 5) {
-      // After user responds to agenda
-      assistantResponse.content = `Excellent! I've created your event. You can now add additional details like date, time, location, and speakers. Would you like to continue to the event details page?`
-      setStep(6)
-    } else if (step === 6) {
-      // Final step
-      assistantResponse.content = `Great! I've prepared the event details page for you. Click "Continue" to add the final details to your event.`
-      setStep(7)
+      case 2: // Time slot entry
+        if (validateTimeSlot(input)) {
+          let formattedTime = input;
+          // Format time if needed
+          if (input.includes("am") || input.includes("pm")) {
+            formattedTime = input.replace(/am/i, " AM").replace(/pm/i, " PM");
+          }
+          
+          setBookingState(prev => ({ ...prev, timeSlot: formattedTime, step: 3 }))
+          assistantResponse.content = `Got it! Time slot: ${formattedTime}. Now, what is your required room capacity (number of people)?`;
+        } else {
+          assistantResponse.content = "Please enter a valid time slot format (e.g., 10:00 AM - 12:00 PM).";
+        }
+        break;
+
+      case 3: // Capacity entry
+        if (validateCapacity(input)) {
+          const capacity = Number(input);
+          setBookingState(prev => ({ ...prev, capacity, step: 4 }))
+          assistantResponse.content = `Room Katharyn Alvord Gerlich Theater in Meany Hall for the Performing Arts has been successfully booked!
+
+What is the name of your event?`;
+        } else {
+          assistantResponse.content = "Please enter a valid capacity (a positive number).";
+        }
+        break;
+
+      case 4: // Event name entry
+        setBookingState(prev => ({ ...prev, eventName: input, step: 5 }))
+        assistantResponse.content = `Would you like me to generate a suggested content agenda for your ${input} event?`;
+        break;
+
+      case 5: // Suggest content
+        if (input.toLowerCase().includes('yes') || input.toLowerCase().includes('sure') || input.toLowerCase().includes('ok')) {
+          const content = suggestContentForEvent(bookingState.eventName || "");
+          setBookingState(prev => ({ ...prev, eventContent: content, step: 6 }))
+          assistantResponse.content = content;
+        } else {
+          setBookingState(prev => ({ ...prev, step: 6 }))
+          assistantResponse.content = "No problem! Your event has been created. Would you like to add any additional details or make any changes?";
+        }
+        break;
+
+      default:
+        assistantResponse.content = "Your booking has been finalized. Click 'Continue to Event Details' to complete the process.";
+        break;
     }
 
     setMessages((prev) => [...prev, assistantResponse])
@@ -116,86 +252,75 @@ Would you like to use this agenda or modify it?`
     }
   }
 
-  const handleContinue = () => {
-    router.push("/dashboard/events")
-  }
+  const handleContinue = async () => {
+    if (!user) {
+      toast({
+        title: "Authentication Required",
+        description: "Please sign in to create an event.",
+        variant: "destructive",
+      });
+      router.push("/auth/signin");
+      return;
+    }
 
-  return (
-    <div className="flex flex-col h-[600px]">
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className="flex items-start gap-2 max-w-[80%]">
-              {message.role === "assistant" && (
-                <Avatar className="h-8 w-8">
-                  <AvatarImage src="/placeholder.svg?height=32&width=32" alt="AI Assistant" />
-                  <AvatarFallback>AI</AvatarFallback>
-                </Avatar>
-              )}
-              <Card className={message.role === "user" ? "bg-primary text-primary-foreground" : ""}>
-                <CardContent className="p-3">
-                  <p className="whitespace-pre-line">{message.content}</p>
-                </CardContent>
-              </Card>
-              {message.role === "user" && (
-                <Avatar className="h-8 w-8">
-                  <AvatarImage src="/placeholder.svg?height=32&width=32" alt="User" />
-                  <AvatarFallback>U</AvatarFallback>
-                </Avatar>
-              )}
-            </div>
-          </div>
-        ))}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="flex items-start gap-2 max-w-[80%]">
-              <Avatar className="h-8 w-8">
-                <AvatarImage src="/placeholder.svg?height=32&width=32" alt="AI Assistant" />
-                <AvatarFallback>AI</AvatarFallback>
-              </Avatar>
-              <Card>
-                <CardContent className="p-3">
-                  <div className="flex space-x-2">
-                    <div className="h-2 w-2 rounded-full bg-muted-foreground animate-bounce" />
-                    <div className="h-2 w-2 rounded-full bg-muted-foreground animate-bounce delay-150" />
-                    <div className="h-2 w-2 rounded-full bg-muted-foreground animate-bounce delay-300" />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-      {step < 7 ? (
-        <div className="border-t p-4">
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="Type your message..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isLoading}
-            />
-            <Button size="icon" onClick={handleSend} disabled={isLoading || !input.trim()}>
-              <Send className="h-4 w-4" />
-              <span className="sr-only">Send</span>
-            </Button>
-          </div>
-          <div className="mt-2 text-xs text-muted-foreground flex items-center">
-            <Sparkles className="h-3 w-3 mr-1" />
-            AI-powered suggestions help you create better events
-          </div>
-        </div>
-      ) : (
-        <div className="border-t p-4">
-          <Button className="w-full" onClick={handleContinue}>
-            Continue to Event Details
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
-        </div>
-      )}
-    </div>
-  )
-}
+    try {
+      setSavingEvent(true);
+      
+      // Parse the date string (MM/DD/YYYY) to a proper date format
+      const dateParts = bookingState.date?.split('/') || [];
+      const month = parseInt(dateParts[0]) - 1; // JS months are 0-indexed
+      const day = parseInt(dateParts[1]);
+      const year = parseInt(dateParts[2]);
+      const eventDate = new Date(year, month, day);
+      const formattedDate = eventDate.toISOString().split('T')[0]; // YYYY-MM-DD
+      
+      // Parse time slot (e.g. "10:00 AM - 12:00 PM")
+      const timeSlot = bookingState.timeSlot || "";
+      const timeParts = timeSlot.split('-').map(t => t.trim());
+      let startTime = timeParts[0];
+      let endTime = timeParts[1] || "";
+      
+      // Create event document in Firestore
+      const eventData = {
+        title: bookingState.eventName || "Untitled Event",
+        description: bookingState.eventContent || "No description provided",
+        date: formattedDate,
+        time: timeSlot,
+        startTime: startTime,
+        endTime: endTime,
+        location: `Katharyn Alvord Gerlich Theater, Room ${bookingState.capacity}`,
+        capacity: bookingState.capacity,
+        attendeeCount: 0,
+        tags: ["AI", "Deep Learning", "Workshop"],
+        hostId: user.uid,
+        hostName: user.name || user.displayName || "Event Host",
+        hostPhotoURL: user.photoURL || "",
+        isPublic: true,
+        requiresRegistration: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      // Add the document to Firestore
+      const docRef = await addDoc(collection(db, "events"), eventData);
+      
+      toast({
+        title: "Event Created",
+        description: "Your event has been created successfully!",
+      });
+
+      // Navigate to the event page
+      router.push(`/events/${docRef.id}`);
+    } catch (error) {
+      console.error("Error creating event:", error);
+      toast({
+        title: "Error",
+        description: "Failed to create your event. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingEvent(false);
+    }
+
+
 
