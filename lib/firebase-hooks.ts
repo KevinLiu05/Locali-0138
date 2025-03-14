@@ -1,10 +1,10 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { collection, doc, getDoc, query, where, orderBy, onSnapshot, getDocs } from "firebase/firestore"
+import { collection, doc, getDoc, query, where, orderBy, onSnapshot, getDocs, limit } from "firebase/firestore"
 import { db } from "./firebase"
 
-export function useEvents({ onlyFeatured = false, upcomingDays = null } = {}) {
+export function useEvents({ onlyFeatured = false, upcomingDays = null, limitCount = null } = {}) {
   const [events, setEvents] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
@@ -22,40 +22,53 @@ export function useEvents({ onlyFeatured = false, upcomingDays = null } = {}) {
 
         // Add sorting by date
         queryConstraints.push(orderBy("date", "asc"))
-
-        const q = query(eventsRef, ...queryConstraints)
-        const snapshot = await getDocs(q)
-
-        let fetchedEvents = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
-
-        // If fetching upcoming events, filter by date
-        if (upcomingDays) {
-          const today = new Date()
-          const futureDate = new Date()
-          futureDate.setDate(today.getDate() + upcomingDays)
-
-          fetchedEvents = fetchedEvents.filter((event) => {
-            // Make sure to handle string dates correctly
-            const eventDate = typeof event.date === "string" ? new Date(event.date) : event.date
-
-            return eventDate >= today && eventDate <= futureDate
-          })
+        
+        // Add limit if specified
+        if (limitCount) {
+          queryConstraints.push(limit(limitCount))
         }
 
-        setEvents(fetchedEvents)
+        const q = query(eventsRef, ...queryConstraints)
+        
+        // Set up real-time listener
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          let fetchedEvents = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+
+          // If fetching upcoming events, filter by date
+          if (upcomingDays) {
+            const today = new Date()
+            const futureDate = new Date()
+            futureDate.setDate(today.getDate() + upcomingDays)
+
+            fetchedEvents = fetchedEvents.filter((event) => {
+              // Make sure to handle string dates correctly
+              const eventDate = typeof event.date === "string" ? new Date(event.date) : event.date
+
+              return eventDate >= today && eventDate <= futureDate
+            })
+          }
+
+          setEvents(fetchedEvents)
+          setLoading(false)
+        }, (err) => {
+          console.error("Error in events snapshot:", err)
+          setError(err as Error)
+          setLoading(false)
+        })
+
+        return () => unsubscribe()
       } catch (err) {
         console.error("Error fetching events:", err)
         setError(err as Error)
-      } finally {
         setLoading(false)
       }
     }
 
     fetchEvents()
-  }, [onlyFeatured, upcomingDays])
+  }, [onlyFeatured, upcomingDays, limitCount])
 
   return { events, loading, error }
 }
@@ -109,56 +122,6 @@ export function useEvent(eventId: string | undefined) {
   }, [eventId])
 
   return { event, loading, error }
-}
-
-export function useUserProfile(userId: string | undefined) {
-  const [profile, setProfile] = useState<any | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<Error | null>(null)
-
-  useEffect(() => {
-    if (!userId) {
-      setLoading(false)
-      return
-    }
-
-    const profileRef = doc(db, "users", userId)
-
-    const unsubscribe = onSnapshot(
-      profileRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data()
-
-          setProfile({
-            id: docSnap.id,
-            name: data.name || "",
-            email: data.email || "",
-            bio: data.bio || "",
-            fieldOfStudy: data.fieldOfStudy || "",
-            interests: data.interests || [],
-            organization: data.organization || "",
-            photoURL: data.photoURL ? `${data.photoURL.split("?")[0]}?t=${Date.now()}` : "",
-            role: data.role || "User",
-            attendedEvents: data.attendedEvents || [],
-            rsvpedEvents: data.rsvpedEvents || [],
-            updatedAt: data.updatedAt || null,
-          })
-        } else {
-          setProfile(null)
-        }
-        setLoading(false)
-      },
-      (err) => {
-        setError(err as Error)
-        setLoading(false)
-      },
-    )
-
-    return () => unsubscribe()
-  }, [userId])
-
-  return { profile, loading, error }
 }
 
 export function useEventAttendees(eventId: string | undefined) {
@@ -236,65 +199,6 @@ export function useEventAttendees(eventId: string | undefined) {
   return { attendees, loading, error }
 }
 
-// New hook for featured events (specifically for home page)
-export function useFeaturedEvents(limit = 4) {
-  const [events, setEvents] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<Error | null>(null)
-
-  useEffect(() => {
-    const fetchFeaturedEvents = async () => {
-      try {
-        const eventsRef = collection(db, "events")
-        const q = query(eventsRef, where("featured", "==", true), orderBy("date", "asc"), limit ? limit : 4)
-
-        const snapshot = await getDocs(q)
-        const fetchedEvents = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
-
-        console.log("Featured events fetched:", fetchedEvents.length)
-        setEvents(fetchedEvents)
-      } catch (err) {
-        console.error("Error fetching featured events:", err)
-        setError(err as Error)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchFeaturedEvents()
-  }, [limit])
-
-  return { events, loading, error }
-}
-
-/**
- * Calculate simple match percentage between user interests and event tags
- * @param userInterests Array of user's selected interests
- * @param eventTags Array of event tags
- * @returns Match percentage (0-100)
- */
-export function calculateEventMatch(userInterests: string[], eventTags: string[]) {
-  if (!userInterests || !userInterests.length || !eventTags || !eventTags.length) {
-    return 0
-  }
-
-  // Count matching tags
-  const matchingTags = eventTags.filter((tag) =>
-    userInterests.some((interest) => interest.toLowerCase() === tag.toLowerCase()),
-  )
-
-  // Calculate percentage based on matching tags
-  const matchPercentage = Math.round((matchingTags.length / eventTags.length) * 100)
-
-  return matchPercentage
-}
-
-/**
- * Hook to get recommended events for a user based on their interests
- */
 export function useRecommendedEvents(userId: string | undefined, limit = 3) {
   const [recommendations, setRecommendations] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -361,4 +265,28 @@ export function useRecommendedEvents(userId: string | undefined, limit = 3) {
 
   return { recommendations, loading, error }
 }
+
+/**
+ * Calculate simple match percentage between user interests and event tags
+ * @param userInterests Array of user's selected interests
+ * @param eventTags Array of event tags
+ * @returns Match percentage (0-100)
+ */
+export function calculateEventMatch(userInterests: string[], eventTags: string[]) {
+  if (!userInterests || !userInterests.length || !eventTags || !eventTags.length) {
+    return 0
+  }
+
+  // Count matching tags
+  const matchingTags = eventTags.filter((tag) =>
+    userInterests.some((interest) => interest.toLowerCase() === tag.toLowerCase()),
+  )
+
+  // Calculate percentage based on matching tags
+  const matchPercentage = Math.round((matchingTags.length / Math.max(1, eventTags.length)) * 100)
+
+  return matchPercentage
+}
+
+
 
